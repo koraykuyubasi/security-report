@@ -44,9 +44,9 @@ APKSIGNER = ANDROID_BUILD_TOOLS / "apksigner"
 # Active cycle. The final-report implementation is retained for future work.
 STAGE_NAMES = ("static", "frida")
 DEFAULT_MODEL = "gpt-6-astra"
-DEFAULT_FRIDA_MODEL = "claude-opus-4-7"
+DEFAULT_CLAUDE_MODEL = "claude-opus-4-7"
 DEFAULT_REASONING_EFFORT = "high"
-REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 PROTECTION_CATEGORIES = {
     "code_obfuscation",
@@ -85,8 +85,9 @@ STAGES = {
         schema=SCHEMAS_ROOT / "static-analysis.schema.json",
         output_json="static-analysis.json",
         output_markdown="static-analysis.md",
-        sandbox="workspace-write",
+        sandbox=None,
         model_env="APK_PIPELINE_STATIC_MODEL",
+        runner="claude",
     ),
     "frida": StageSpec(
         name="frida",
@@ -255,7 +256,7 @@ def create_run(inventory: dict[str, Any], run_id: str) -> Path:
 def model_for(spec: StageSpec, cli_value: str | None) -> str:
     if spec.runner == "claude":
         # A shared Codex model must never leak into the Claude stage.
-        return cli_value or os.environ.get(spec.model_env) or DEFAULT_FRIDA_MODEL
+        return cli_value or os.environ.get(spec.model_env) or DEFAULT_CLAUDE_MODEL
     return (
         cli_value
         or os.environ.get(spec.model_env)
@@ -267,12 +268,13 @@ def model_for(spec: StageSpec, cli_value: str | None) -> str:
 def effort_for_stage(spec: StageSpec, args: argparse.Namespace) -> str:
     if spec.runner == "claude":
         effort = (
-            args.frida_effort
-            or os.environ.get("APK_PIPELINE_FRIDA_EFFORT")
+            (args.frida_effort or os.environ.get("APK_PIPELINE_FRIDA_EFFORT")
+             if spec.name == "frida" else None)
             or reasoning_effort_for(args.reasoning_effort)
         )
         if effort not in CLAUDE_EFFORTS:
-            raise PipelineError(f"Claude does not support effort {effort!r}; use --frida-effort high")
+            option = "--frida-effort" if spec.name == "frida" else "--reasoning-effort"
+            raise PipelineError(f"Claude does not support effort {effort!r}; use {option} high")
         return effort
     return reasoning_effort_for(args.reasoning_effort)
 
@@ -303,7 +305,7 @@ def preflight_claude() -> None:
     if result.returncode != 0 or not isinstance(status, dict) or not status.get("loggedIn"):
         raise PipelineError(
             "Claude Code is not authenticated. Run 'claude auth login' or configure "
-            "ANTHROPIC_API_KEY on this host before starting a run with stage 2."
+            "ANTHROPIC_API_KEY on this host before starting a run."
         )
 
 
@@ -439,11 +441,12 @@ def build_stage_command(
     if reasoning_effort not in CLAUDE_EFFORTS:
         raise PipelineError(f"Unsupported Claude effort: {reasoning_effort}")
     schema = load_json(spec.schema)
-    for field in ("bypass_script", "markdown_report"):
+    for field in (("bypass_script", "markdown_report") if spec.name == "frida" else ()):
         schema["properties"][field] = {"type": "string", "minLength": 1}
         schema["required"].append(field)
     prompt = build_prompt(spec, run_dir)
-    return [
+    tool_names = "Bash,Read,Write,Edit,Glob,Grep" if spec.name == "static" else ""
+    command = [
         claude_binary(required=False),
         "--print",
         "--model", model,
@@ -453,14 +456,17 @@ def build_stage_command(
         "--no-session-persistence",
         "--disable-slash-commands",
         "--permission-mode", "dontAsk",
-        "--tools", "",
+        "--tools", tool_names,
         "--strict-mcp-config",
         "--mcp-config", '{"mcpServers":{}}',
         "--setting-sources", "",
         "--settings", '{"disableAllHooks":true}',
         "--json-schema", json.dumps(schema),
-        prompt,
     ]
+    if tool_names:
+        command.extend(("--allowedTools", tool_names))
+    command.append(prompt)
+    return command
 
 
 def save_claude_result(events_path: Path, output_path: Path) -> None:
@@ -715,12 +721,12 @@ def ensure_stage_not_started(spec: StageSpec, run_dir: Path) -> None:
         )
 
 
-def invoke_claude(command: list[str], events_path: Path, effort: str) -> None:
+def invoke_claude(command: list[str], events_path: Path, effort: str, spec: StageSpec) -> None:
     with events_path.open("w", encoding="utf-8") as events:
         # Full static reports can exceed the OS limit for one command-line argument.
         result = subprocess.run(command[:-1], cwd=ROOT, input=command[-1], text=True,
                                 stdout=events, stderr=None, check=False,
-                                env=stage_environment(STAGES["frida"], effort))
+                                env=stage_environment(spec, effort))
     if result.returncode:
         raise PipelineError(f"claude exited with status {result.returncode}; inspect {events_path}")
 
@@ -731,7 +737,7 @@ def run_frida_generation_stage(run_dir: Path, model: str, effort: str) -> None:
     stage = run_dir / spec.number
     command = build_stage_command(spec, run_dir, model, effort)
     print("Frida agent: generating script from the static analysis report", flush=True)
-    invoke_claude(command, stage / "events.jsonl", effort)
+    invoke_claude(command, stage / "events.jsonl", effort, spec)
     save_claude_result(stage / "events.jsonl", stage / "generation-result.json")
     report = load_json(stage / "generation-result.json")
     script = report.pop("bypass_script", None)
@@ -780,8 +786,11 @@ def execute_stage(
     )
     print(f"Events: {events_path}")
     try:
-        if spec.runner == "claude":
+        if spec.name == "frida":
             run_frida_generation_stage(run_dir, model, reasoning_effort)
+        elif spec.runner == "claude":
+            invoke_claude(command, events_path, reasoning_effort, spec)
+            save_claude_result(events_path, run_dir / spec.number / spec.output_json)
         else:
             with events_path.open("w", encoding="utf-8") as events:
                 completed = subprocess.run(
@@ -835,14 +844,16 @@ def command_run(args: argparse.Namespace) -> int:
     stages = selected_stages(args.stage)
     preflight_files(stages)
     # Check every runner before a long static stage or creating an empty run.
+    checked_runners = set()
     for stage in stages:
         spec = STAGES[stage]
         effort_for_stage(spec, args)
-        if not args.dry_run:
+        if not args.dry_run and spec.runner not in checked_runners:
             if spec.runner == "claude":
                 preflight_claude()
             else:
                 codex_binary()
+            checked_runners.add(spec.runner)
 
     if args.stage in {"static", "all"}:
         if not args.apk_dir:
@@ -895,7 +906,6 @@ def availability(path_or_command: Path | str) -> tuple[bool, str]:
 def command_doctor(_: argparse.Namespace) -> int:
     checks: list[tuple[str, Path | str]] = [
         ("python", sys.executable),
-        ("codex", os.environ.get("APK_PIPELINE_CODEX_BIN", "codex")),
         ("claude", os.environ.get("APK_PIPELINE_CLAUDE_BIN", "claude")),
         ("java", "java"),
         ("aapt2", AAPT2),
@@ -904,16 +914,13 @@ def command_doctor(_: argparse.Namespace) -> int:
         ("jadx archive", JADX_ARCHIVE),
     ]
     if "final" in STAGE_NAMES:
+        checks.append(("codex", os.environ.get("APK_PIPELINE_CODEX_BIN", "codex")))
         checks.append(("weasyprint", WEASYPRINT))
     failed = False
     for label, target in checks:
         ok, location = availability(target)
         failed = failed or not ok
         print(f"{'OK' if ok else 'MISSING':7} {label:14} {location}")
-    print(
-        f"{'SET' if os.environ.get('CODEX_API_KEY') else 'NOT SET':7} "
-        "CODEX_API_KEY  (saved Codex authentication may still be available)"
-    )
     print("Model configuration:")
     for name in STAGE_NAMES:
         spec = STAGES[name]

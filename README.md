@@ -5,7 +5,7 @@ including Ubuntu setup and a separate Windows/WSL 2 walkthrough.
 
 The full cycle currently runs two CLI agents over an APK set:
 
-1. Static inventory, decompilation, and protection analysis — Codex, GPT-6 Astra High
+1. Static inventory, decompilation, and protection analysis — Claude Code, Opus 4.7 High
 2. Frida bypass script generation from the static report — Claude Code, Opus 4.7 High
 
 Final HTML/PDF report generation is temporarily disabled. Its implementation,
@@ -24,9 +24,9 @@ enforced defense; `ABSENT` means none was identified within the inspected scope.
 ## Terminal setup
 
 Run commands from this project directory. The pipeline is terminal-only and uses
-Python 3.10 or newer, the Codex and Claude Code CLIs, and the analysis tools checked
+Python 3.10 or newer, the Claude Code CLI, and the analysis tools checked
 by `doctor`.
-Node.js and npm are not required by the pipeline itself; your Codex CLI installation
+Node.js and npm are not required by the pipeline itself; your Claude Code installation
 and individual analysis tools may have their own runtime requirements.
 
 Place each APK set directly under `apks/<application-name>/`. For split packages,
@@ -35,12 +35,11 @@ APK may use any filename ending in `.apk`.
 
 ## Model configuration
 
-Choosing models is optional. Static analysis defaults to `gpt-6-astra`;
-the Frida stage uses Claude Code with the pinned model `claude-opus-4-7`.
+Choosing models is optional. Both stages use Claude Code with the pinned model
+`claude-opus-4-7`.
 Both stages default to `high` reasoning effort. Model overrides are optional:
 
 ```bash
-export APK_PIPELINE_MODEL="your-codex-default-model"
 export APK_PIPELINE_STATIC_MODEL="optional-static-model"
 export APK_PIPELINE_FRIDA_MODEL="optional-frida-model"
 export APK_PIPELINE_REASONING_EFFORT="optional-effort"
@@ -56,30 +55,27 @@ python3 pipeline.py run \
   --static-model your-model
 ```
 
-Use existing Codex CLI authentication or set `CODEX_API_KEY` in the launching shell.
-Claude Code uses its own authentication. After installing it on the execution host:
+After installing Claude Code on the execution host, authenticate it:
 
 ```bash
 claude auth login
 claude auth status
 ```
 
-Alternatively configure `ANTHROPIC_API_KEY`. Never store either provider's keys in
-the repository. The orchestrator removes the other provider's key variables from
-each CLI's environment. Codex also filters secret-like variables from agent shell
-commands; Claude runs with its own permissions and environment behavior.
-Set `APK_PIPELINE_CLAUDE_BIN` if `claude` is outside `PATH`.
+Alternatively configure `ANTHROPIC_API_KEY`. Never store credentials in the
+repository. The orchestrator removes `CODEX_API_KEY` and `OPENAI_API_KEY` from
+Claude's environment. Set `APK_PIPELINE_CLAUDE_BIN` if `claude` is outside `PATH`.
 Installation: https://code.claude.com/docs/en/setup
 
-For Codex stages, model precedence is the command-line stage option, stage environment
-variable, shared `APK_PIPELINE_MODEL`, then `gpt-6-astra`. For Claude, it is
-`--frida-model`, `APK_PIPELINE_FRIDA_MODEL`, then `claude-opus-4-7`; the shared Codex
-model is ignored. Reasoning effort precedence is `--reasoning-effort`,
+Each stage uses its command-line model option (`--static-model` or `--frida-model`),
+then its stage environment variable, then `claude-opus-4-7`. The legacy Codex
+`APK_PIPELINE_MODEL` variable is ignored by both active stages.
+Reasoning effort precedence is `--reasoning-effort`,
 `APK_PIPELINE_REASONING_EFFORT`, then `high`. Stage 2 can override this with
-`--frida-effort` or `APK_PIPELINE_FRIDA_EFFORT` (in that order). Claude supports
-`low`, `medium`, `high`, `xhigh`, and `max`; `minimal` is rejected for stage 2.
+`--frida-effort` or `APK_PIPELINE_FRIDA_EFFORT` (in that order). Supported efforts
+are `low`, `medium`, `high`, `xhigh`, and `max`; `minimal` is rejected by Claude.
 
-Full runs check both CLIs and Claude authentication before starting static analysis.
+Runs check Claude availability and authentication before starting either stage.
 Dry-runs do not require Claude authentication and make no model calls. An installed,
 authenticated CLI does not guarantee access to the selected model on your account.
 
@@ -185,7 +181,7 @@ python3 -u pipeline.py run --stage all --apk-dir apks/APP_NAME
 ```
 
 Detach with `Ctrl+B`, then `D`; reconnect with `tmux attach -t apk-report`.
-The APKs, analysis tools, and authentication for both CLIs must be available on that
+The APKs, analysis tools, and Claude authentication must be available on that
 execution host. No web server or dashboard port is needed.
 
 Moving execution to another machine still requires adapting the machine-specific
@@ -197,5 +193,12 @@ dependencies.
 
 APK files and generated reports remain in the local workspace. Relevant prompts,
 selected file contents, and tool outputs are sent to the selected remote provider:
-OpenAI for static analysis, Anthropic for script generation. APK-derived content is treated as
+Anthropic for both stages. APK-derived content is treated as
 untrusted evidence.
+
+Stage 1 enables and preauthorizes Claude's Bash, Read, Write, Edit, Glob, and Grep
+tools for local analysis. Its prompt limits writes to the stage output directory;
+this is not an OS sandbox, and shell commands inherit Claude's environment.
+Stage 2 has no tools. Both invocations disable hooks, slash commands, configured
+MCP servers, and user/project/local settings. See the
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference) for tool flags.

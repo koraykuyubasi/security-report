@@ -17,11 +17,12 @@ class PipelineTests(unittest.TestCase):
              mock.patch.object(pipeline, "RUNS_ROOT", Path(temporary)), \
              mock.patch.object(pipeline, "resolve_apk_dir", return_value=Path("apks/example")), \
              mock.patch.object(pipeline, "inventory_apks", return_value={"base_apk_sha256": "a" * 64}), \
-             mock.patch.object(pipeline, "preflight_claude"), \
-             mock.patch.object(pipeline, "codex_binary", return_value="codex"), \
+             mock.patch.object(pipeline, "preflight_claude") as preflight, \
+             mock.patch.object(pipeline, "codex_binary", side_effect=AssertionError("Codex is not needed")), \
              mock.patch.object(pipeline, "execute_stage") as execute, \
              mock.patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(pipeline.command_run(args), 0)
+            preflight.assert_called_once()
             self.assertEqual([call.args[0].name for call in execute.call_args_list], ["static", "frida"])
             run_dir = execute.call_args.args[1]
             self.assertEqual(set(pipeline.load_json(run_dir / "run-state.json")["stages"]), {"static", "frida"})
@@ -37,6 +38,28 @@ class PipelineTests(unittest.TestCase):
             validate.assert_not_called()
         with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
             pipeline.build_parser().parse_args(["run", "--stage", "final", "--run-id", "test"])
+
+    def test_all_dry_run_needs_no_cli_and_creates_no_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            apk_dir = root / "apks/example"
+            apk_dir.mkdir(parents=True)
+            self.make_apk(apk_dir / "base.apk")
+            args = pipeline.build_parser().parse_args([
+                "run", "--apk-dir", "apks/example", "--run-id", "dry-test", "--dry-run",
+            ])
+            with mock.patch.object(pipeline, "ROOT", root), \
+                 mock.patch.object(pipeline, "APKS_ROOT", root / "apks"), \
+                 mock.patch.object(pipeline, "RUNS_ROOT", root / "runs"), \
+                 mock.patch.object(pipeline.shutil, "which", return_value=None), \
+                 mock.patch.object(pipeline.subprocess, "run", side_effect=AssertionError("No subprocess expected")), \
+                 mock.patch.dict(pipeline.os.environ, {}, clear=True), \
+                 mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(pipeline.command_run(args), 0)
+            for stage in ("static", "frida"):
+                self.assertIn(f"[{stage}] runner: claude", output.getvalue())
+                self.assertIn(f"[{stage}] model: claude-opus-4-7", output.getvalue())
+            self.assertFalse((root / "runs").exists())
 
     def make_apk(self, path: Path) -> None:
         with zipfile.ZipFile(path, "w") as archive:
@@ -65,7 +88,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_codex_command_contains_model_schema_and_secret_filter(self) -> None:
         run_dir = pipeline.ROOT / "runs" / "test-run"
-        spec = pipeline.STAGES["static"]
+        spec = pipeline.STAGES["final"]
         command = pipeline.build_codex_command(spec, run_dir, "example-model", "high")
         self.assertIn("example-model", command)
         self.assertIn('model_reasoning_effort="high"', command)
@@ -73,19 +96,19 @@ class PipelineTests(unittest.TestCase):
         self.assertIn(str(spec.schema), command)
         self.assertNotIn("CODEX_API_KEY", command)
 
-    def test_pipeline_defaults_to_astra_high(self) -> None:
+    def test_pipeline_defaults_to_claude_high(self) -> None:
         spec = pipeline.STAGES["static"]
         with mock.patch.dict(
             pipeline.os.environ,
             {},
             clear=True,
         ):
-            self.assertEqual(pipeline.model_for(spec, None), "gpt-6-astra")
+            self.assertEqual(pipeline.model_for(spec, None), "claude-opus-4-7")
             self.assertEqual(pipeline.reasoning_effort_for(None), "high")
 
     def test_claude_stage_does_not_inherit_codex_model(self) -> None:
         with mock.patch.dict(pipeline.os.environ, {"APK_PIPELINE_MODEL": "custom-codex"}, clear=True):
-            self.assertEqual(pipeline.model_for(pipeline.STAGES["static"], None), "custom-codex")
+            self.assertEqual(pipeline.model_for(pipeline.STAGES["static"], None), "claude-opus-4-7")
             self.assertEqual(pipeline.model_for(pipeline.STAGES["final"], None), "custom-codex")
             self.assertEqual(pipeline.model_for(pipeline.STAGES["frida"], None), "claude-opus-4-7")
             with mock.patch.dict(pipeline.os.environ, {"APK_PIPELINE_FRIDA_MODEL": "claude-env"}):
@@ -125,6 +148,70 @@ class PipelineTests(unittest.TestCase):
         statuses = properties["generation"]["items"]["properties"]["status"]["enum"]
         self.assertEqual(set(statuses), {"GENERATED", "NOT_APPLICABLE", "INSUFFICIENT_EVIDENCE"})
 
+    def test_static_claude_command_enables_analysis_tools_and_static_schema(self) -> None:
+        spec = pipeline.STAGES["static"]
+        command = pipeline.build_stage_command(spec, pipeline.ROOT / "runs/test", "claude-opus-4-7", "high")
+        tools = {"Bash", "Read", "Write", "Edit", "Glob", "Grep"}
+        self.assertEqual(spec.runner, "claude")
+        self.assertEqual(set(command[command.index("--tools") + 1].split(",")), tools)
+        self.assertEqual(set(command[command.index("--allowedTools") + 1].split(",")), tools)
+        schema = json.loads(command[command.index("--json-schema") + 1])
+        self.assertEqual(schema, pipeline.load_json(spec.schema))
+        self.assertEqual(schema["$schema"], "http://json-schema.org/draft-07/schema#")
+        self.assertNotIn("bypass_script", schema["properties"])
+        self.assertIn("static-analysis.md", command[-1])
+
+    def test_static_model_and_effort_are_independent_of_frida_overrides(self) -> None:
+        spec = pipeline.STAGES["static"]
+        args = pipeline.build_parser().parse_args(["run", "--reasoning-effort", "max", "--frida-effort", "low"])
+        with mock.patch.dict(pipeline.os.environ, {
+            "APK_PIPELINE_STATIC_MODEL": "static-env", "APK_PIPELINE_FRIDA_MODEL": "frida-env",
+            "APK_PIPELINE_FRIDA_EFFORT": "medium",
+        }, clear=True):
+            self.assertEqual(pipeline.model_for(spec, None), "static-env")
+            self.assertEqual(pipeline.model_for(spec, "static-cli"), "static-cli")
+            self.assertEqual(pipeline.effort_for_stage(spec, args), "max")
+            self.assertEqual(pipeline.effort_for_stage(pipeline.STAGES["frida"], args), "low")
+            args.reasoning_effort = "minimal"
+            with self.assertRaisesRegex(pipeline.PipelineError, "use --reasoning-effort high"):
+                pipeline.effort_for_stage(spec, args)
+
+    def test_static_executes_claude_and_saves_validated_handoff(self) -> None:
+        for missing_markdown in (False, True):
+            with self.subTest(missing_markdown=missing_markdown), tempfile.TemporaryDirectory() as temporary:
+                run_dir, _ = self.generation_fixture(Path(temporary))
+                report_path = run_dir / "01-static/static-analysis.json"
+                report = pipeline.load_json(report_path)
+                report_path.unlink()
+                markdown = run_dir / "01-static/static-analysis.md"
+                markdown.unlink()
+                pipeline.atomic_json_write(run_dir / "run-state.json", {"stages": {"static": {"status": "pending"}}})
+
+                def simulate_claude(command, **kwargs):
+                    self.assertEqual(command[0], "claude")
+                    self.assertIn("Analyze the APK set", kwargs["input"])
+                    self.assertNotIn("OPENAI_API_KEY", kwargs["env"])
+                    self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+                    if not missing_markdown:
+                        markdown.write_text("# Static analysis")
+                    kwargs["stdout"].write(json.dumps({"type": "result", "subtype": "success", "structured_output": report}) + "\n")
+                    return mock.Mock(returncode=0)
+
+                with mock.patch.object(pipeline, "claude_binary", return_value="claude"), \
+                     mock.patch.object(pipeline.subprocess, "run", side_effect=simulate_claude) as run, \
+                     mock.patch.object(pipeline, "run_frida_generation_stage", side_effect=AssertionError("Wrong stage")), \
+                     mock.patch("sys.stdout", new_callable=io.StringIO):
+                    if missing_markdown:
+                        with self.assertRaisesRegex(pipeline.PipelineError, "Markdown report"):
+                            pipeline.execute_stage(pipeline.STAGES["static"], run_dir, "claude-opus-4-7", "high", False)
+                    else:
+                        pipeline.execute_stage(pipeline.STAGES["static"], run_dir, "claude-opus-4-7", "high", False)
+                run.assert_called_once()
+                self.assertEqual(pipeline.load_json(report_path), report)
+                state = pipeline.load_json(run_dir / "run-state.json")["stages"]["static"]
+                self.assertEqual(state["status"], "failed" if missing_markdown else "completed")
+                self.assertEqual(state["runner"], "claude")
+
     def test_claude_effort_override_and_environment(self) -> None:
         args = pipeline.build_parser().parse_args([
             "run", "--reasoning-effort", "minimal", "--frida-effort", "high",
@@ -139,7 +226,7 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn("OPENAI_API_KEY", env)
             self.assertEqual(env["ANTHROPIC_API_KEY"], "fake-anthropic-key")
             self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], "high")
-            self.assertNotIn("ANTHROPIC_API_KEY", pipeline.stage_environment(pipeline.STAGES["static"], "high"))
+            self.assertNotIn("ANTHROPIC_API_KEY", pipeline.stage_environment(pipeline.STAGES["final"], "high"))
             args.frida_effort = None
             with self.assertRaisesRegex(pipeline.PipelineError, "does not support"):
                 pipeline.effort_for_stage(pipeline.STAGES["frida"], args)
@@ -265,7 +352,7 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             run_dir, report = self.generation_fixture(Path(temporary))
 
-            def invoke(command, events_path, effort):
+            def invoke(command, events_path, effort, spec):
                 events_path.write_text(json.dumps({"type": "result", "subtype": "success",
                     "structured_output": {**report, "markdown_report": "Notes", "bypass_script": " "}}))
 
@@ -299,7 +386,7 @@ class PipelineTests(unittest.TestCase):
              mock.patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(pipeline.command_doctor(None), 0)
         names = {Path(call.args[0]).name for call in available.call_args_list}
-        self.assertTrue({"adb", "frida", "frida-ps", "node", "weasyprint"}.isdisjoint(names))
+        self.assertTrue({"codex", "adb", "frida", "frida-ps", "node", "weasyprint"}.isdisjoint(names))
 
     def test_evidence_path_cannot_escape_stage_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

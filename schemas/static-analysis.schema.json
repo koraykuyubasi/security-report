@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -62,7 +62,7 @@
           "properties": {
             "verified": {"type": ["boolean", "null"]},
             "certificate_summary": {"type": "string"},
-            "evidence": {"$ref": "#/$defs/evidenceList"}
+            "evidence": {"$ref": "#/definitions/evidenceList"}
           }
         }
       }
@@ -120,7 +120,7 @@
             ]
           },
           "summary": {"type": "string"},
-          "evidence": {"$ref": "#/$defs/evidenceList"},
+          "evidence": {"$ref": "#/definitions/evidenceList"},
           "bypass_candidates": {
             "type": "array",
             "items": {
@@ -142,7 +142,7 @@
     "fatal_errors": {"type": "array", "items": {"type": "string"}},
     "limitations": {"type": "array", "items": {"type": "string"}}
   },
-  "$defs": {
+  "definitions": {
     "evidenceList": {
       "type": "array",
       "items": {

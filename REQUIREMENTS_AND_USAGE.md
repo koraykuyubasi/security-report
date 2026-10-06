@@ -9,7 +9,7 @@ not been exercised as part of writing this guide.
 
 The full cycle runs two stages:
 
-1. Static APK analysis through Codex CLI.
+1. Static APK analysis through Claude Code.
 2. Frida bypass script generation through Claude Code, using only the static reports.
 
 The generator does not prepare or inspect devices, install APKs, connect to an
@@ -30,12 +30,11 @@ required. Methodology steps 6 and 7 remain excluded.
 | Java | OpenJDK 21 in this guide | Runs Apktool, JADX, and Android SDK tools |
 | Git | Available on `PATH` | Clone and update the repository |
 | Shell utilities | Bash, curl, unzip, file, ripgrep, coreutils | Installation and static inspection |
-| Codex CLI | Current release with `codex exec` | Static analysis |
-| Claude Code CLI | Current release with structured JSON output | Script generation |
+| Claude Code CLI | Current release with structured JSON output | Static analysis and script generation |
 | Android SDK Build Tools | 36.0.0 | `aapt2` and `apksigner` |
 | Apktool | 2.10.0 JAR | Resource and smali decoding |
 | JADX | 1.5.3 cross-platform ZIP | DEX decompilation |
-| Provider access | Authenticate both CLIs and have access to the configured models | Model calls |
+| Provider access | Authenticate Claude Code and have access to the configured models | Model calls |
 | Internet access | Required for installation, authentication, and model calls | The pipeline is not offline |
 
 The analysis-tool versions above match the repository's current configuration;
@@ -71,13 +70,7 @@ cd security-report
 Keep tool downloads outside the repository. This guide uses
 `$HOME/tools/android-security` for Apktool/JADX and `$HOME/Android/Sdk` for the SDK.
 
-### 3. Install and authenticate the CLIs
-
-Install Codex using its [official installer](https://learn.chatgpt.com/docs/codex/cli):
-
-```bash
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
+### 3. Install and authenticate Claude Code
 
 Install Claude Code using its [official installer](https://code.claude.com/docs/en/setup):
 
@@ -86,28 +79,20 @@ curl -fsSL https://claude.ai/install.sh | bash
 ```
 
 Follow any installer instructions to add its executable directory to `PATH`, then
-open a fresh terminal. Both commands must resolve before continuing:
+open a fresh terminal. The command must resolve before continuing:
 
 ```bash
-command -v codex
 command -v claude
-codex --version
 claude --version
 
-codex login
 claude auth login
 
-codex login status
 claude auth status
 ```
 
-Complete the sign-in flow for each provider separately. Codex also documents
-`codex login --device-auth` for environments where its browser callback cannot be
-used. See [Codex authentication](https://learn.chatgpt.com/docs/auth).
-
-The project supports provider keys through `CODEX_API_KEY` and
-`ANTHROPIC_API_KEY` as an alternative to saved authentication. Set keys in your
-shell environment; do not put them in the repository. The pipeline does not
+The project supports `ANTHROPIC_API_KEY` as an alternative to saved
+authentication. Set the key in your shell environment; do not put it in the
+repository. The pipeline does not
 load `.env` automatically. Successful sign-in does not guarantee access to every
 model; see the model configuration section below.
 
@@ -242,8 +227,8 @@ for prerequisites and installation troubleshooting.
 ### 2. Install the project inside Ubuntu
 
 Open the **Ubuntu terminal** and follow all six Linux installation steps above.
-Install the Linux versions of Python, Java, the SDK tools, and both CLIs inside
-WSL. Authenticate the CLIs there as well. A Windows-side installation or login
+Install the Linux versions of Python, Java, the SDK tools, and Claude Code inside
+WSL. Authenticate Claude Code there as well. A Windows-side installation or login
 does not replace this setup.
 
 Clone under `~/projects/security-report` inside Ubuntu. In the path configuration,
@@ -281,7 +266,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 `doctor` checks configured tool paths and Claude authentication. It does not
-execute the analysis tools, verify Codex authentication, or prove model access.
+execute the analysis tools or prove model access.
 Check the relevant executables separately:
 
 ```bash
@@ -289,7 +274,6 @@ Check the relevant executables separately:
 "$APK_PIPELINE_BUILD_TOOLS/apksigner" version
 java -jar "$HOME/tools/android-security/apktool_2.10.0.jar" --version
 jadx --version
-codex login status
 claude auth status
 ```
 
@@ -333,9 +317,9 @@ python3 pipeline.py run --stage all --apk-dir apks/my-app
 python3 pipeline.py run --apk-dir apks/my-app
 ```
 
-A dry-run still needs the APK set and resolves the Codex executable; it does not
-verify authentication or model access. Actual runs send model context to OpenAI
-and Anthropic and consume the corresponding account usage.
+A dry-run still needs the APK set but does not require Claude Code or verify
+authentication or model access. Actual runs send model context to Anthropic
+and consume the corresponding account usage.
 
 ## Run stages separately
 
@@ -367,7 +351,7 @@ Current repository defaults:
 
 | Stage | CLI | Model | Effort |
 | --- | --- | --- | --- |
-| Static analysis | Codex | `gpt-6-astra` | `high` |
+| Static analysis | Claude Code | `claude-opus-4-7` | `high` |
 | Script generation | Claude Code | `claude-opus-4-7` | `high` |
 
 These are project defaults, not a guarantee of availability on another account.
@@ -375,7 +359,7 @@ To use models available to your accounts, substitute their identifiers:
 
 ```bash
 python3 pipeline.py run --stage all --apk-dir apks/my-app \
-  --static-model YOUR_CODEX_MODEL \
+  --static-model YOUR_STATIC_CLAUDE_MODEL \
   --frida-model YOUR_CLAUDE_MODEL \
   --reasoning-effort high \
   --frida-effort high
@@ -386,18 +370,17 @@ Supported configuration variables:
 | Variable | Purpose |
 | --- | --- |
 | `APK_PIPELINE_STATIC_MODEL` | Static-stage model override |
-| `APK_PIPELINE_MODEL` | Shared Codex model fallback; does not affect Claude |
-| `APK_PIPELINE_FRIDA_MODEL` | Claude model override |
+| `APK_PIPELINE_MODEL` | Legacy Codex fallback; ignored by both active stages |
+| `APK_PIPELINE_FRIDA_MODEL` | Script-generation model override |
 | `APK_PIPELINE_REASONING_EFFORT` | Shared reasoning effort |
-| `APK_PIPELINE_FRIDA_EFFORT` | Claude effort override |
-| `APK_PIPELINE_CODEX_BIN` | Codex executable path when not on `PATH` |
+| `APK_PIPELINE_FRIDA_EFFORT` | Stage 2 effort override |
 | `APK_PIPELINE_CLAUDE_BIN` | Claude executable path when not on `PATH` |
 | `APK_PIPELINE_BUILD_TOOLS` | Directory containing `aapt2` and `apksigner` |
 
 Explicit command-line model options override environment settings. Claude's effort
-choices are `low`, `medium`, `high`, `xhigh`, and `max`; a shared `minimal` effort
-requires a supported `--frida-effort` override. No final-stage model option is
-available while reporting is disabled.
+choices are `low`, `medium`, `high`, `xhigh`, and `max`; `minimal` is unsupported.
+Stage 1 uses the shared effort; `--frida-effort` overrides only stage 2.
+No final-stage model option is available while reporting is disabled.
 
 ## Outputs and progress
 
@@ -438,7 +421,7 @@ stop following a log. New runs do not create `03-final/` or runtime Frida logs.
 | Symptom | What to check |
 | --- | --- |
 | `doctor` reports `/home/koray/...` missing | Complete the Python and methodology path edits; set `APK_PIPELINE_BUILD_TOOLS`. |
-| `codex` or `claude` is not found | Open a fresh terminal, check `PATH`, or set the corresponding executable override. On Windows, install inside WSL. |
+| `claude` is not found | Open a fresh terminal, check `PATH`, or set the corresponding executable override. On Windows, install inside WSL. |
 | JADX works but `doctor` reports a missing archive | Keep `jadx-1.5.3.zip` at the configured `JADX_ARCHIVE` path. |
 | SDK manager is missing | Check `cmdline-tools/latest/bin/sdkmanager`; avoid a duplicate nested `cmdline-tools` directory. |
 | Authentication fails | Run the relevant login command as the same Linux user running the pipeline. |
