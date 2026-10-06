@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "generated_at",
+    "application",
+    "tool_runs",
+    "protections",
+    "fatal_errors",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "run_id": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_name",
+        "version_name",
+        "version_code",
+        "min_sdk",
+        "target_sdk",
+        "framework",
+        "base_apk_sha256",
+        "apk_files",
+        "signing"
+      ],
+      "properties": {
+        "package_name": {"type": "string"},
+        "version_name": {"type": "string"},
+        "version_code": {"type": "string"},
+        "min_sdk": {"type": ["integer", "null"]},
+        "target_sdk": {"type": ["integer", "null"]},
+        "framework": {
+          "type": "string",
+          "enum": ["native", "react-native", "flutter", "hybrid", "unknown"]
+        },
+        "base_apk_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "apk_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["filename", "size_bytes", "sha256", "split_type"],
+            "properties": {
+              "filename": {"type": "string"},
+              "size_bytes": {"type": "integer", "minimum": 1},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "split_type": {"type": "string"}
+            }
+          }
+        },
+        "signing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verified", "certificate_summary", "evidence"],
+          "properties": {
+            "verified": {"type": ["boolean", "null"]},
+            "certificate_summary": {"type": "string"},
+            "evidence": {"$ref": "#/$defs/evidenceList"}
+          }
+        }
+      }
+    },
+    "tool_runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tool", "version", "command", "exit_code", "warnings", "outputs"],
+        "properties": {
+          "tool": {"type": "string"},
+          "version": {"type": "string"},
+          "command": {"type": "string"},
+          "exit_code": {"type": "integer"},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "outputs": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "protections": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "category",
+          "verdict",
+          "summary",
+          "evidence",
+          "bypass_candidates",
+          "limitations"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "code_obfuscation",
+              "root_detection",
+              "emulator_detection",
+              "debugger_detection",
+              "tampering_integrity",
+              "hook_frida_detection",
+              "certificate_pinning_transport_trust",
+              "native_rasp"
+            ]
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "PRESENT",
+              "ABSENT"
+            ]
+          },
+          "summary": {"type": "string"},
+          "evidence": {"$ref": "#/$defs/evidenceList"},
+          "bypass_candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["class", "method", "signature", "suggested_behavior"],
+              "properties": {
+                "class": {"type": "string"},
+                "method": {"type": "string"},
+                "signature": {"type": "string"},
+                "suggested_behavior": {"type": "string"}
+              }
+            }
+          },
+          "limitations": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "fatal_errors": {"type": "array", "items": {"type": "string"}},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "evidenceList": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "line", "excerpt"],
+        "properties": {
+          "path": {"type": "string"},
+          "line": {"type": ["integer", "null"]},
+          "excerpt": {"type": "string"}
+        }
+      }
+    }
+  }
+}

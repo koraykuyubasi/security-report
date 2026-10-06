@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "generated_at",
+    "package_name",
+    "base_apk_sha256",
+    "html_path",
+    "pdf_path",
+    "steps_6_7_performed",
+    "quality_checks",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "run_id": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "package_name": {"type": "string"},
+    "base_apk_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "html_path": {"type": "string"},
+    "pdf_path": {"type": "string"},
+    "steps_6_7_performed": {"type": "boolean", "const": false},
+    "quality_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identifiers_match",
+        "evidence_references_checked",
+        "statuses_consistent",
+        "skipped_steps_disclosed",
+        "pdf_render_checked"
+      ],
+      "properties": {
+        "identifiers_match": {"type": "boolean"},
+        "evidence_references_checked": {"type": "boolean"},
+        "statuses_consistent": {"type": "boolean"},
+        "skipped_steps_disclosed": {"type": "boolean"},
+        "pdf_render_checked": {"type": "boolean"}
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  }
+}
+

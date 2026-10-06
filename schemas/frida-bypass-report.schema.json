@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "generated_at",
+    "application",
+    "generation",
+    "runtime_validation",
+    "steps_6_7_performed",
+    "fatal_errors",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2.0"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_name",
+        "base_apk_sha256"
+      ],
+      "properties": {
+        "package_name": {
+          "type": "string"
+        },
+        "base_apk_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "generation": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "category",
+          "static_verdict",
+          "status",
+          "targets",
+          "rationale",
+          "limitations"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "code_obfuscation",
+              "root_detection",
+              "emulator_detection",
+              "debugger_detection",
+              "tampering_integrity",
+              "hook_frida_detection",
+              "certificate_pinning_transport_trust",
+              "native_rasp"
+            ]
+          },
+          "static_verdict": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "GENERATED",
+              "NOT_APPLICABLE",
+              "INSUFFICIENT_EVIDENCE"
+            ]
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "runtime_validation": {
+      "type": "string",
+      "const": "NOT_PERFORMED"
+    },
+    "steps_6_7_performed": {
+      "type": "boolean",
+      "const": false
+    },
+    "fatal_errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
